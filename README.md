@@ -1,5 +1,7 @@
 # EfficientFER: EfficientNetv2 Based Deep Learning Approach for Facial Expression Recognition
 
+[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/efficientfer-efficientnetv2-based-deep/facial-expression-recognition-on-fer2013)](https://paperswithcode.com/sota/facial-expression-recognition-on-fer2013?p=efficientfer-efficientnetv2-based-deep)
+
 ## About
 EfficientFER is a lightweight and efficient emotion recognition model with high accuracy on the FER-2013 dataset. The model can successfully detect 7 basic emotional states (angry, disgust, fear, happy, sad, surprise, neutral) using modern deep learning techniques.
 
