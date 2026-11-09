@@ -296,7 +296,7 @@ def main():
     total_time = time.time() - start_time
     print(f"\nTraining completed!")
     print(f"Total time: {total_time / 3600:.2f} hours")
-    print(f"Best validation accuracy: {best_val_f1:.2f}%")
+    print(f"Best validation F1: {best_val_f1:.2f}%")
 
 if __name__ == '__main__':
     main()
