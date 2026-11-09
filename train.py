@@ -1,9 +1,11 @@
+import argparse
 import time
 import torch
 import torch.nn as nn
 from tqdm import tqdm
 from pathlib import Path
 from ema_pytorch import EMA 
+from sklearn.metrics import f1_score
 from torchinfo import summary
 import torch.nn.functional as F
 from efficientfer import EfficientFER
@@ -19,13 +21,19 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cuda.enable_flash_sdp(True)
 torch.backends.cuda.enable_mem_efficient_sdp(True)
 
+parser = argparse.ArgumentParser()
+
+parser.add_argument("--data_dir", type=str)
+
+args = parser.parse_args()
+
 # Configuration parameters
 CONFIG = {
     # Dataset parameters
-    'data_dir': 'fer2013_extended',
+    'data_dir': args.data_dir,
     'num_classes': 7,
     'batch_size': 64,
-    'num_workers': 20,
+    'num_workers': 4,
     'image_size': 224,
 
     # Training parameters
@@ -190,6 +198,8 @@ def validate(model, val_loader, criterion):
     total_loss = 0
     correct = 0
     total = 0
+    all_preds = []
+    all_targets = []
     
     progress_bar = tqdm(val_loader, desc='Validation')
     
@@ -199,46 +209,35 @@ def validate(model, val_loader, criterion):
             
             with autocast('cuda', dtype=torch.bfloat16):
                 outputs = eval_model(inputs)
-                loss = criterion(outputs, targets)
-            
-            total_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
-            
-            avg_loss = total_loss / (batch_idx + 1)
-            acc = 100. * correct / total
-            progress_bar.set_postfix({
-                'Loss': f'{avg_loss:.4f}',
-                'Acc': f'{acc:.2f}%'
-            })
-    
-    return total_loss / len(val_loader), acc
+                all_preds.extend(torch.argmax(outputs, dim=1).cpu().flatten().tolist())
+                all_targets.extend(targets.cpu().flatten().tolist())
 
-def save_checkpoint(model, ema_model, optimizer, scheduler, epoch, best_val_acc, is_best=False):
+    return f1_score(all_targets, all_preds, average="macro")
+
+def save_checkpoint(model, ema_model, optimizer, scheduler, epoch, best_val_f1, is_best=False):
     """Save the model checkpoint"""
     if is_best:
         checkpoint = {
             'epoch': epoch,
+            'model': model,
             'model_state_dict': model.state_dict(),
             'ema_state_dict': ema_model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
-            'best_val_acc': best_val_acc,
+            'best_val_f1': best_val_f1,
             'config': CONFIG
         }
         best_model_path = Path(CONFIG['checkpoint_dir']) / 'best_model.pth'
         torch.save(checkpoint, best_model_path)
-        print(f"\nNew best model saved! (Epoch {epoch}, Val Acc: {best_val_acc:.2f}%)")
+        print(f"\nNew best model saved! (Epoch {epoch}, Val F1: {best_val_f1:.2%})")
 
-def log_results(epoch, train_loss, train_acc, val_loss, val_acc):
+def log_results(epoch, train_loss, train_acc, val_f1):
     """Save training results to file"""
     with open(CONFIG['result_file'], 'a') as f:
         f.write(f"Epoch: {epoch}/{CONFIG['epochs']} | "
                 f"Train Loss: {train_loss:.4f} | "
                 f"Train Acc: {train_acc:.2f}% | "
-                f"Val Loss: {val_loss:.4f} | "
-                f"Val Acc: {val_acc:.2f}%\n")
+                f"Val F1: {val_f1:.4f}\n")
 
 def main():
     """Main training function"""
@@ -249,8 +248,7 @@ def main():
     model, ema_model, train_loader, val_loader, criterion, optimizer, scheduler, scaler = setup_training()
     
     # Variables for tracking training
-    best_val_acc = 0
-    best_val_loss = float('inf')
+    best_val_f1 = 0
     patience_counter = 0
     start_time = time.time()
     
@@ -266,22 +264,22 @@ def main():
         train_loss, train_acc = train_epoch(model, ema_model, train_loader, criterion, optimizer, scaler, epoch)
         
         # Validation with only EMA model
-        val_loss, val_acc = validate(ema_model, val_loader, criterion)
+        val_criterion = lambda y_pred, y: f1_score(y, y_pred, average="macro")
+        val_f1 = validate(ema_model, val_loader, val_criterion)
         
         # Save results
-        log_results(epoch, train_loss, train_acc, val_loss, val_acc)
+        log_results(epoch, train_loss, train_acc, val_f1)
         
         # Save the best model
-        is_best = val_loss < best_val_loss
+        is_best = val_f1 > best_val_f1
         if is_best:
-            best_val_acc = val_acc
-            best_val_loss = val_loss
+            best_val_f1 = val_f1
             patience_counter = 0
         else:
             patience_counter += 1
         
         # Save checkpoint
-        save_checkpoint(model, ema_model, optimizer, scheduler, epoch, best_val_acc, is_best)
+        save_checkpoint(model, ema_model, optimizer, scheduler, epoch, best_val_f1, is_best)
         
         # Update learning rate
         scheduler.step()
@@ -292,13 +290,13 @@ def main():
             break
         
         # Print epoch summary
-        print(f"\nEpoch {epoch}/{CONFIG['epochs']} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}% | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}% | LR: {scheduler.get_last_lr()[0]:.6f}")
+        print(f"\nEpoch {epoch}/{CONFIG['epochs']} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}% | Val F1: {val_f1:.2%} | LR: {scheduler.get_last_lr()[0]:.6f}")
     
     # Calculate training time
     total_time = time.time() - start_time
     print(f"\nTraining completed!")
     print(f"Total time: {total_time / 3600:.2f} hours")
-    print(f"Best validation accuracy: {best_val_acc:.2f}%")
+    print(f"Best validation accuracy: {best_val_f1:.2f}%")
 
 if __name__ == '__main__':
     main()

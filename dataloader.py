@@ -6,6 +6,8 @@ from torch.utils.data import Dataset, DataLoader
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
+cv2.setNumThreads(0)
+
 class FERDataset(Dataset):
     def __init__(self, root_dir, mode='train', transform=None, image_size=224):
         self.root_dir = root_dir
@@ -83,7 +85,7 @@ def get_test_transform():
 def test_dataloader(data_dir, batch_size=32, num_workers=4, image_size=224):
     test_dataset = FERDataset(
         root_dir=data_dir,
-        mode='PrivateTest',
+        mode='test',
         transform=get_test_transform(),
         image_size=image_size
     )
@@ -101,14 +103,14 @@ def test_dataloader(data_dir, batch_size=32, num_workers=4, image_size=224):
 def get_train_dataloaders(data_dir, batch_size=32, num_workers=4, image_size=224):
     train_dataset = FERDataset(
         root_dir=data_dir,
-        mode='Training',
+        mode='train',
         transform=get_train_transform(),
         image_size=image_size
     )
     
     val_dataset = FERDataset(
         root_dir=data_dir,
-        mode='PublicTest',
+        mode='val',
         transform=get_val_transform(),
         image_size=image_size
     )
@@ -118,9 +120,9 @@ def get_train_dataloaders(data_dir, batch_size=32, num_workers=4, image_size=224
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=2,
+        # pin_memory=True,
+        # persistent_workers=True,
+        prefetch_factor=None,
     )
     
     val_loader = DataLoader(
@@ -129,8 +131,8 @@ def get_train_dataloaders(data_dir, batch_size=32, num_workers=4, image_size=224
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=2
+        # persistent_workers=True,
+        prefetch_factor=None
     )
     
     return train_loader, val_loader
