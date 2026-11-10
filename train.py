@@ -24,6 +24,8 @@ torch.backends.cuda.enable_mem_efficient_sdp(True)
 parser = argparse.ArgumentParser()
 
 parser.add_argument("--data_dir", type=str)
+parser.add_argument("--cutmix_mixup", action="store_true")
+parser.add_argument("--scheduler", action="store_true")
 
 args = parser.parse_args()
 
@@ -39,12 +41,12 @@ CONFIG = {
     # Training parameters
     'epochs': 50,
     'patience': 7,
-    'learning_rate': 5e-3,
+    'learning_rate': 1e-3 if args.scheduler else 5e-3,
     'weight_decay': 0.03,
     'min_lr': 1e-6,
     
     # Checkpoint parameters
-    'checkpoint_dir': 'checkpoints',
+    'checkpoint_dir': 'checkpoints_scheduler_2' if not args.cutmix_mixup else "checkpoints_cutmix_mixup",
     
     # Device
     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
@@ -63,13 +65,23 @@ class FocalLoss(nn.Module):
     
     def forward(self, input, target):
         log_prob = F.log_softmax(input, dim=-1)  
-        ce_loss = -log_prob.gather(1, target.unsqueeze(1)).squeeze()
-        focal_loss = (1 - torch.exp(-ce_loss)) ** self.gamma * ce_loss
+
+        if target.dim() == 1:
+            target = F.one_hot(target, num_classes=input.size(-1))
+
+        prob = log_prob.exp()
+        focal_weight = (1 - prob) ** self.gamma
+        focal_loss = -target * focal_weight * log_prob
+        # ce_loss = -log_prob.gather(1, target.unsqueeze(1)).squeeze()
+        # focal_loss = (1 - torch.exp(-ce_loss)) ** self.gamma * ce_loss
         
         if self.weight is not None:
-            focal_loss = focal_loss * self.weight[target]
+            focal_loss = focal_loss * self.weight
+        #     focal_loss = focal_loss * self.weight[target]
+        
             
-        return focal_loss.mean()
+        return focal_loss.sum(dim=-1).mean()
+        # return focal_loss.mean()
        
 def setup_training():
     """Prepare training components"""
@@ -104,15 +116,18 @@ def setup_training():
         CONFIG['data_dir'],
         CONFIG['batch_size'],
         CONFIG['num_workers'],
-        CONFIG['image_size']
+        CONFIG['image_size'],
+        cutmix_mixup=args.cutmix_mixup,
     )
     print(f'Number of Training Samples: {len(train_loader.dataset)}')
     print(f'Number of Validation Samples: {len(val_loader.dataset)}')
     print("=============================================================================================================================")
 
     # Calculate class weights
-    class_weights = calculate_class_weights(train_loader).to(CONFIG['device'])
-    print(f'Class Weights: {class_weights}')
+    # class_weights = calculate_class_weights(train_loader).to(CONFIG['device'])
+    # Hardcode this so that augmentations work
+    class_weights = torch.tensor([1.0266, 9.3933, 1.0010, 0.5685, 0.8260, 0.8492, 1.2935]).to(CONFIG["device"])
+    print(f'Class Weights (hardcoded): {class_weights}')
     print("=============================================================================================================================")
 
     # Loss function
@@ -138,7 +153,7 @@ def setup_training():
     
     return model, ema_model, train_loader, val_loader, criterion, optimizer, scheduler, scaler
 
-def train_epoch(model, ema_model, train_loader, criterion, optimizer, scaler, epoch):
+def train_epoch(model, ema_model, train_loader, criterion, optimizer, scaler, epoch, scheduler):
     """Train the model for one epoch"""
     model.train()
     total_loss = 0
@@ -166,6 +181,9 @@ def train_epoch(model, ema_model, train_loader, criterion, optimizer, scaler, ep
         
         scaler.step(optimizer)
         scaler.update()
+
+        if args.scheduler:
+            scheduler.step()
         
         # EMA güncelleme
         ema_model.update()
@@ -179,17 +197,17 @@ def train_epoch(model, ema_model, train_loader, criterion, optimizer, scaler, ep
         total_loss += loss.item()
         _, predicted = outputs.max(1)
         total += targets.size(0)
-        correct += predicted.eq(targets).sum().item()
+        # correct += predicted.eq(targets).sum().item()
         
-        # Progress bar güncelleme
+        # Progress bar
         avg_loss = total_loss / (batch_idx + 1)
-        acc = 100. * correct / total
+        # acc = 100. * correct / total
         progress_bar.set_postfix({
             'Loss': f'{avg_loss:.4f}',
-            'Acc': f'{acc:.2f}%'
+            # 'Acc': f'{acc:.2f}%'
         })
     
-    return total_loss / len(train_loader), acc
+    return total_loss / len(train_loader)
 
 def validate(model, val_loader, criterion):
     """Evaluate the model on the validation set"""
@@ -219,7 +237,6 @@ def save_checkpoint(model, ema_model, optimizer, scheduler, epoch, best_val_f1, 
     if is_best:
         checkpoint = {
             'epoch': epoch,
-            'model': model,
             'model_state_dict': model.state_dict(),
             'ema_state_dict': ema_model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
@@ -231,12 +248,11 @@ def save_checkpoint(model, ema_model, optimizer, scheduler, epoch, best_val_f1, 
         torch.save(checkpoint, best_model_path)
         print(f"\nNew best model saved! (Epoch {epoch}, Val F1: {best_val_f1:.2%})")
 
-def log_results(epoch, train_loss, train_acc, val_f1):
+def log_results(epoch, train_loss, val_f1):
     """Save training results to file"""
     with open(CONFIG['result_file'], 'a') as f:
         f.write(f"Epoch: {epoch}/{CONFIG['epochs']} | "
                 f"Train Loss: {train_loss:.4f} | "
-                f"Train Acc: {train_acc:.2f}% | "
                 f"Val F1: {val_f1:.4f}\n")
 
 def main():
@@ -261,14 +277,14 @@ def main():
         print(f"\nEpoch {epoch}/{CONFIG['epochs']}")
         
         # Training
-        train_loss, train_acc = train_epoch(model, ema_model, train_loader, criterion, optimizer, scaler, epoch)
+        train_loss = train_epoch(model, ema_model, train_loader, criterion, optimizer, scaler, epoch, scheduler)
         
         # Validation with only EMA model
         val_criterion = lambda y_pred, y: f1_score(y, y_pred, average="macro")
         val_f1 = validate(ema_model, val_loader, val_criterion)
         
         # Save results
-        log_results(epoch, train_loss, train_acc, val_f1)
+        log_results(epoch, train_loss, val_f1)
         
         # Save the best model
         is_best = val_f1 > best_val_f1
@@ -282,7 +298,9 @@ def main():
         save_checkpoint(model, ema_model, optimizer, scheduler, epoch, best_val_f1, is_best)
         
         # Update learning rate
-        scheduler.step()
+        # Something weird in the original code; barely does anything
+        if not args.scheduler:
+            scheduler.step()
         
         # Early stopping control
         if patience_counter >= CONFIG['patience']:
@@ -290,7 +308,7 @@ def main():
             break
         
         # Print epoch summary
-        print(f"\nEpoch {epoch}/{CONFIG['epochs']} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}% | Val F1: {val_f1:.2%} | LR: {scheduler.get_last_lr()[0]:.6f}")
+        print(f"\nEpoch {epoch}/{CONFIG['epochs']} | Train Loss: {train_loss:.4f} | Val F1: {val_f1:.2%} | LR: {scheduler.get_last_lr()[0]:.6f}")
     
     # Calculate training time
     total_time = time.time() - start_time

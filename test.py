@@ -1,11 +1,19 @@
+import argparse
 import torch
 from dataloader import test_dataloader
 from efficientfer import EfficientFER 
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.metrics import confusion_matrix, classification_report, f1_score
 import numpy as np
 import os
+
+parser = argparse.ArgumentParser()
+
+parser.add_argument("--data_dir", type=str)
+parser.add_argument("--checkpoint_path", type=str, default="checkpoints/best_model.pth")
+
+args = parser.parse_args()
 
 def test():
     # Device selection
@@ -14,11 +22,11 @@ def test():
     
     # Model loading
     model = EfficientFER(num_classes=7)
-    checkpoint_path = 'checkpoints/best_model.pth'
+    checkpoint_path = args.checkpoint_path
     
     try:
         # Model weights load
-        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
       
         state_dict = checkpoint['model_state_dict']
         
@@ -44,11 +52,13 @@ def test():
         return
     
     # Test data load
-    test_loader = test_dataloader('fer2013_extended', 256, 12, image_size=224)
+    test_loader = test_dataloader(args.data_dir, 256, 4, image_size=224)
     
     # Predictions and real labels
     all_predictions = []
     all_labels = []
+    all_y_preds = []
+    all_y_labels = []
     
     # Test process
     with torch.no_grad():
@@ -57,9 +67,13 @@ def test():
             outputs = model(images)
             
             _, predicted = torch.max(outputs.data, 1)
+            all_y_preds.extend(torch.argmax(outputs, dim=1).flatten().cpu().tolist())
+            all_y_labels.extend(labels.flatten().cpu().tolist())
             
             all_predictions.extend(predicted.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
+
+    test_f1 = f1_score(all_y_labels, all_y_preds, average="macro")
     
     # Class-wise accuracy calculation
     class_correct = [0] * 7
@@ -75,7 +89,7 @@ def test():
     print("\nClass-wise accuracy:")
     for i in range(7):
         accuracy = 100 * class_correct[i] / class_total[i] if class_total[i] > 0 else 0
-        print(f'Sınıf {i}: {accuracy:.2f}% ({class_correct[i]}/{class_total[i]})')
+        print(f'accuracy {i}: {accuracy:.2f}% ({class_correct[i]}/{class_total[i]})')
     
     # Confusion Matrix creation
     cm = confusion_matrix(all_labels, all_predictions)
@@ -83,6 +97,8 @@ def test():
     # General test accuracy calculation
     test_accuracy = np.mean(np.array(all_labels) == np.array(all_predictions)) * 100
     print(f"\nGeneral Test Accuracy: {test_accuracy:.4f}%")
+
+    print(f"General Test Macro F1: {test_f1:.2%}")
     
     # Confusion Matrix visualization
     plt.figure(figsize=(10, 8))
@@ -94,7 +110,7 @@ def test():
     plt.close()
     
     # Classification Report print
-    report = classification_report(all_labels, all_predictions)
+    report = classification_report(all_labels, all_predictions, digits=3)
     print("\nClassification Report:")
     print(report)
 

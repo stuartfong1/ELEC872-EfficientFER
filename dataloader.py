@@ -1,6 +1,8 @@
 import os
 import cv2
 import torch
+from torchvision.transforms import v2
+from torch.utils.data import default_collate
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 import albumentations as A
@@ -100,7 +102,7 @@ def test_dataloader(data_dir, batch_size=32, num_workers=4, image_size=224):
     
     return test_loader
 
-def get_train_dataloaders(data_dir, batch_size=32, num_workers=4, image_size=224):
+def get_train_dataloaders(data_dir, batch_size=32, num_workers=4, image_size=224, *, cutmix_mixup=False):
     train_dataset = FERDataset(
         root_dir=data_dir,
         mode='train',
@@ -115,15 +117,33 @@ def get_train_dataloaders(data_dir, batch_size=32, num_workers=4, image_size=224
         image_size=image_size
     )
     
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        # pin_memory=True,
-        # persistent_workers=True,
-        prefetch_factor=None,
-    )
+    if cutmix_mixup:
+        cutmix = v2.CutMix(num_classes=7)
+        mixup = v2.MixUp(num_classes=7)
+        cutmix_or_mixup = v2.RandomChoice([cutmix, mixup])
+        def collate_fn(batch):
+            return cutmix_or_mixup(*default_collate(batch))
+    
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            # pin_memory=True,
+            # persistent_workers=True,
+            prefetch_factor=None,
+            collate_fn=collate_fn,
+        )
+    else:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            # pin_memory=True,
+            # persistent_workers=True,
+            prefetch_factor=None,
+        )
     
     val_loader = DataLoader(
         val_dataset,
